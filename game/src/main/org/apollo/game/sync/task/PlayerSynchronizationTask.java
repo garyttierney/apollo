@@ -1,21 +1,22 @@
 package org.apollo.game.sync.task;
 
-import java.util.ArrayList;
-import java.util.Iterator;
-import java.util.List;
-
 import org.apollo.game.message.impl.PlayerSynchronizationMessage;
 import org.apollo.game.model.Position;
+import org.apollo.game.model.entity.MobRepository;
 import org.apollo.game.model.entity.Player;
+import org.apollo.game.sync.SynchronizationPriorityProvider;
 import org.apollo.game.sync.block.AppearanceBlock;
 import org.apollo.game.sync.block.ChatBlock;
 import org.apollo.game.sync.block.SynchronizationBlock;
 import org.apollo.game.sync.block.SynchronizationBlockSet;
-import org.apollo.game.sync.seg.AddPlayerSegment;
-import org.apollo.game.sync.seg.MovementSegment;
-import org.apollo.game.sync.seg.RemoveMobSegment;
-import org.apollo.game.sync.seg.SynchronizationSegment;
-import org.apollo.game.sync.seg.TeleportSegment;
+import org.apollo.game.sync.seg.*;
+
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.Iterator;
+import java.util.List;
+import java.util.stream.Collectors;
+import java.util.stream.StreamSupport;
 
 /**
  * A {@link SynchronizationTask} which synchronizes the specified {@link Player} .
@@ -39,6 +40,16 @@ public final class PlayerSynchronizationTask extends SynchronizationTask {
 	 * The Player.
 	 */
 	private final Player player;
+
+	/**
+	 * The synchronization prioritiy provider.
+	 */
+	private final SynchronizationPriorityProvider priorityProvider = new SynchronizationPriorityProvider();
+
+	/**
+	 * A comparator which compares players given their synchronization priority to the current player.
+	 */
+	private final Comparator<Player> playerPriorityComparator = Comparator.comparingInt(this::getPriority);
 
 	/**
 	 * Creates the {@link PlayerSynchronizationTask} for the specified {@link Player}.
@@ -83,9 +94,16 @@ public final class PlayerSynchronizationTask extends SynchronizationTask {
 			}
 		}
 
-		int added = 0, count = localPlayers.size();
+		int added = 0, count = localPlayers.size(), maxNewLocalPlayers = MAXIMUM_LOCAL_PLAYERS - count;
+		MobRepository<Player> playerRepository = player.getWorld().getPlayerRepository();
 
-		for (Player other : player.getWorld().getPlayerRepository()) {
+		List<Player> nearbyPlayers = StreamSupport.stream(playerRepository.spliterator(), false)
+				.filter(this::considerLocalPlayer)
+				.sorted(playerPriorityComparator)
+				.limit(maxNewLocalPlayers)
+				.collect(Collectors.toList());
+
+		for (Player other : nearbyPlayers) {
 			if (count >= MAXIMUM_LOCAL_PLAYERS) {
 				player.flagExcessivePlayers();
 				break;
@@ -113,6 +131,25 @@ public final class PlayerSynchronizationTask extends SynchronizationTask {
 		PlayerSynchronizationMessage message = new PlayerSynchronizationMessage(lastKnownRegion, position,
 				regionChanged, segment, oldCount, segments);
 		player.send(message);
+	}
+
+	/**
+	 * Consider the {@code other} player to be added to the local player list.
+	 *
+	 * @param other The player to consider for the local player list.
+	 * @return true if the player should be added to the local player list.
+	 */
+	private boolean considerLocalPlayer(Player other) {
+		Position position = player.getPosition();
+		int distance = player.getViewingDistance();
+		List<Player> localPlayerList = player.getLocalPlayerList();
+
+		return other != player && !localPlayerList.contains(other) && other.getPosition()
+				.isWithinDistance(position, distance);
+	}
+
+	private int getPriority(Player other) {
+		return priorityProvider.getUpdatePriority(player, other);
 	}
 
 	/**
